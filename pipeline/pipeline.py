@@ -152,13 +152,38 @@ class SpeechPIIPipeline:
                     ),
                     input=prompt
                 )
-                tagged = response.output_text
-                df_out.append({"file": r["file"], "tagged": tagged})
+                raw = response.output_text
 
-        result = pd.DataFrame(df_out)
-        if out_csv:
-            result.to_csv(out_csv, index=False)
-        return result
+                # define markers
+                reason_marker = "### REASONING ###"
+                output_marker = "### OUTPUT ###"
+
+                # extract reason (text between ### REASONING ### and ### OUTPUT ###)
+                if reason_marker in raw:
+                    after_reason = raw.split(reason_marker, 1)[1]
+                    if output_marker in after_reason:
+                        reason = after_reason.split(output_marker, 1)[0].strip()
+                    else:
+                        reason = after_reason.strip()
+                else:
+                    reason = ""
+
+                # extract tagged transcript (text after ### OUTPUT ###)
+                if output_marker in raw:
+                    tagged = raw.split(output_marker, 1)[1].strip()
+                else:
+                    tagged = raw.strip()
+
+                df_out.append({
+                    "file":   r["file"],
+                    "tagged": tagged,
+                    "reason": reason
+                })
+
+            result = pd.DataFrame(df_out)
+            if out_csv:
+                result.to_csv(out_csv, index=False)
+            return result
 
     def align_and_extract(self,
                           df: pd.DataFrame,

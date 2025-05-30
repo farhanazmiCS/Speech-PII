@@ -40,7 +40,7 @@ def correct(
 def tag(
     in_csv: str = "data/transcriptions_corrected.csv",
     text_col: str = "transcript",
-    method: str = "zero_shot",
+    method: str = "zero_shot_icl",
     out_csv: str = "data/transcriptions_tagged.csv"
 ):
     """

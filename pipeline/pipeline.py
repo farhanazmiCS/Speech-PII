@@ -13,8 +13,12 @@ from openai import OpenAI
 from utils import save_df, load_df
 from prompts import build_correction_prompt, build_tagging_prompt
 from utils import tokenize_reference, align_transcript_with_vosk
-from utils import extract_pii_tuples
+from utils import extract_pii_tuples, retrieve_key
 import typer
+
+from vosk import Model, KaldiRecognizer
+import soundfile as sf
+import json, ast
 
 VALID_LLMS = [
     "gpt-4o", "llama-3-70b-instruct"
@@ -148,7 +152,7 @@ class SpeechPIIPipeline:
                 response = self.llm.responses.create(
                     model="gpt-4o",
                     instructions=(
-                        "You are an expert in tagging PII. Use [TAG_START] and [TAG_END]."
+                        "You are an expert in tagging PII."
                     ),
                     input=prompt
                 )
@@ -184,12 +188,55 @@ class SpeechPIIPipeline:
             if out_csv:
                 result.to_csv(out_csv, index=False)
             return result
+        
+    def get_vosk_timestamps(self,
+                             df: pd.DataFrame,
+                             audio_col: str,
+                             vosk_model: Model,
+                             out_json: str | None = None) -> pd.DataFrame:
+        """
+        Iterate through df[audio_col], run Vosk on each path, and collect timestamps.
+        Adds a 'vosk_words' column (list of word dicts). Optionally writes CSV.
+        """
+        df_out = []
+        items = list(df.iterrows())
+
+        with typer.progressbar(items, label="🎙️ Retrieving Vosk timestamps") as bar:
+            for _, row in bar:
+                rec = KaldiRecognizer(vosk_model, 16000)
+                rec.SetWords(True)
+                index = int(retrieve_key(row[audio_col]))
+                if index <= 150:
+                    path = '../../data/Audio_Files_for_testing/' + row[audio_col]
+                else:
+                    path = '../../data/newtest_151_500_updated_TTS/' + row[audio_col]
+                try:
+                    audio_data, _ = sf.read(path)
+                    if audio_data.ndim > 1:
+                        audio_data = audio_data.mean(axis=1)
+                    pcm_data = (audio_data * 32767).astype("int16").tobytes()
+                    rec.AcceptWaveform(pcm_data)
+                    result = json.loads(rec.FinalResult())
+                    df_out.append({
+                        "file":       path,
+                        "vosk_words": result['result']
+                    })
+                except Exception as e:
+                    df_out.append({
+                        "file":       path,
+                        "vosk_words": []
+                    })
+
+        df_vosk = pd.DataFrame(df_out)
+        if out_json:
+            df_vosk.to_json(out_json, orient='records', lines=True)
+        return df_vosk
 
     def align_and_extract(self,
                           df: pd.DataFrame,
                           tagged_col: str,
                           method: str,
-                          out_csv: str | None = None) -> pd.DataFrame:
+                          out_csv: str) -> pd.DataFrame:
         """
         Align & extract PII tuples, with progress bar.
         """
@@ -198,15 +245,17 @@ class SpeechPIIPipeline:
         with typer.progressbar(items,
                                label=f"🔍 Aligning & extracting ({method})") as bar:
             for _, r in bar:
-                aligned = align_transcript_with_vosk(r["vosk_words"], r[tagged_col])
+                aligned = align_transcript_with_vosk(r['vosk_words'], r[tagged_col])
                 triplets = extract_pii_tuples(
-                    pd.DataFrame({ "aligned_transcript": [aligned] })
+                    pd.DataFrame({"aligned_transcript": [aligned]})
                 )
-                df_out.append({"file": r["file"], "triplets": triplets[0]})
+
+                triplets = triplets.to_dict('records')
+                
+                df_out.append(triplets[0])
 
         result = pd.DataFrame(df_out)
-        if out_csv:
-            result.to_csv(out_csv, index=False)
+        result.to_csv(out_csv, index=False)
         return result
 
     def evaluate(self,

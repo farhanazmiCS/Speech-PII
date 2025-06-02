@@ -31,6 +31,8 @@ Commands:
 ───────────────────────────────────────────────────────────────────────────────
 ```
 
+### To transcribe
+
 ```bash
 $ python cli.py transcribe --help
 Usage: cli.py transcribe [OPTIONS]
@@ -59,6 +61,8 @@ python cli.py transcribe \
 
 ───────────────────────────────────────────────────────────────────────────────
 
+### To perform correction with N-best
+
 ```bash
 $ python cli.py correct --help
 Usage: cli.py correct [OPTIONS]
@@ -83,6 +87,7 @@ python cli.py correct \
 
 ───────────────────────────────────────────────────────────────────────────────
 
+### To perform tagging
 
 ```bash
 $ python cli.py tag --help
@@ -114,6 +119,30 @@ python cli.py tag \
 
 ───────────────────────────────────────────────────────────────────────────────
 
+### To retrieve Vosk word‐level timestamps
+
+```bash
+$ python cli.py vosk --help
+Usage: cli.py vosk [OPTIONS]
+
+  New Step: Run Vosk on each audio_path in in_csv[audio_col] and save timestamps.
+
+Options:
+  --in-csv TEXT         Input CSV containing audio file paths (default: TODO)
+  --vosk-model-dir TEXT Path to Vosk model directory (default: models/vosk-model-en-us-0.42-gigaspeech)
+  --out-json TEXT        Output JSON for Vosk timestamps (default: ../../data/vosk_output/vosk_output.json)
+  --help                Show this message and exit.
+```
+```
+python cli.py vosk \
+  --in-csv data/transcriptions.csv \
+  --vosk-model-dir model/vosk-model-en-us \
+  --out-csv data/500_vosk_words.csv
+```
+───────────────────────────────────────────────────────────────────────────────
+
+### To extract PII triplets -> `start_time, end_time, tag`
+
 ```bash
 $ python cli.py extract --help
 Usage: cli.py extract [OPTIONS]
@@ -121,13 +150,11 @@ Usage: cli.py extract [OPTIONS]
   Step 4: Align & extract PII tuples.
 
 Options:
+  --method TEXT       Method name (e.g., "zero_shot_icl_no_correct")
   --in-csv TEXT       Input CSV of tagged transcripts
-                      (default: data/transcriptions_tagged.csv)
-  --tagged-col TEXT   Column name for tagged text
-                      (default: tagged)
-  --vosk-json TEXT    Optional JSON file with vosk_words column
   --out-csv TEXT      Output CSV for triplets
-                      (default: data/triplets.csv)
+  --vosk-json TEXT     Input JSON file with vosk_words column
+                      (default: ../../data/vosk_output/vosk_output.json)
   --help              Show this message and exit.
 ```
 
@@ -135,12 +162,14 @@ Example:
 
 ```
 python cli.py extract \
-  --in-csv data/500_test_transcriptions_tagged_few_shot.csv \
-  --vosk-json data/500_vosk_words.json \
-  --out-csv data/hypo_triplets_500_few_shot.csv
+  --method 2_best_few_shot_cot
+  --in-csv ../../data/tagged_transcripts/500_test_transcriptions_tagged_2_best_few_shot_cot.csv \
+  --out-csv ../../data/triplets/triplets_2_best_few_shot_cot.csv \
 ```
 
 ───────────────────────────────────────────────────────────────────────────────
+
+### To evaluate with F1 score
 
 ```bash
 $ python cli.py evaluate --help

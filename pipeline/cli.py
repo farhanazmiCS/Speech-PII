@@ -2,6 +2,8 @@ import typer
 import pandas as pd
 from pipeline import SpeechPIIPipeline
 from utils import save_df, load_df
+from vosk import Model
+import json, ast
 
 app = typer.Typer()
 
@@ -53,11 +55,28 @@ def tag(
     typer.echo(f"Tagged transcripts ({method}) saved to: {out_csv}")
 
 @app.command()
+def vosk(
+    in_csv: str = "data/transcriptions.csv",
+    audio_col: str = "file",
+    vosk_model_dir: str = "models/vosk-model-en-us-0.42-gigaspeech",
+    out_json: str = "../../data/vosk_output/vosk_output.json"
+):
+    """
+    Run Vosk for word-level timestamps.
+    """
+    pipe = SpeechPIIPipeline()
+    df = load_df(in_csv)
+    vosk_model = Model(vosk_model_dir)
+    df_vosk = pipe.get_vosk_timestamps(df, audio_col=audio_col, vosk_model=vosk_model, out_json=out_json)
+    #save_df(df_vosk, out_json)
+    typer.echo(f"Vosk timestamps saved to: {out_json}")
+
+@app.command()
 def extract(
-    in_csv: str = "data/transcriptions_tagged.csv",
-    tagged_col: str = "tagged",
-    vosk_json: str = None,
-    out_csv: str = "data/triplets.csv"
+    method: str = "",
+    in_csv: str = "",
+    out_csv: str = "",
+    vosk_json: str = "../../data/vosk_output/vosk_output.json",
 ):
     """
     Step 4: Align & extract PII tuples.
@@ -65,10 +84,13 @@ def extract(
     """
     pipe = SpeechPIIPipeline()
     df = load_df(in_csv)
-    if vosk_json:
-        vosk_df = pd.read_json(vosk_json)
-        df["vosk_words"] = vosk_df["vosk_words"]
-    df_trip = pipe.align_and_extract(df, tagged_col=tagged_col, method="")
+    vosk_df = pd.read_json(
+        vosk_json,
+        lines=True,
+        orient="records"
+        )
+    df["vosk_words"] = vosk_df["vosk_words"]
+    df_trip = pipe.align_and_extract(df, tagged_col="tagged", method=method, out_csv=out_csv)
     save_df(df_trip, out_csv)
     typer.echo(f"Extracted triplets saved to: {out_csv}")
 

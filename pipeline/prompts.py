@@ -40,13 +40,15 @@ def build_tagging_prompt(transcript: str, method: str) -> str:
     )
 
     common = (
+        "Follow the template when outputting your response.\n"
         "Preserve the transcript exactly; do **not** correct typos or rephrase.\n"
-        "Only add start/end tags around PII; output nothing else.\n"
+        "Only add start/end tags around PII as described in the PII tags section.\n"
+        "DO NOT COME UP WITH YOUR OWN PII TAGS; use the ones provided.\n"
         "Output the final tagged transcript below the ### OUTPUT ### section.\n"
     )
 
     cot_instruct = (
-        "Output the reasoning for each tag in the ### REASONING ### section, if\n"
+        "Think step-by-step, and output your reasoning thought process for each tag below the ### REASONING ### section.\n"
     )
 
     # all nine examples packed into one list
@@ -119,9 +121,9 @@ def build_tagging_prompt(transcript: str, method: str) -> str:
         {transcript}
 
         ### REASONING ###
-        1.
-        2.
-        3.
+        1. ...
+        2. ...
+        N. ...
 
         ### OUTPUT ###
     """.strip()
@@ -135,9 +137,9 @@ def build_tagging_prompt(transcript: str, method: str) -> str:
             {transcript}
 
             ### REASONING ###
-            1.
-            2.
-            3.
+            1. ...
+            2. ...
+            N. ...
 
             ### OUTPUT ###
         """.strip(),

@@ -4,6 +4,7 @@ import soundfile as sf
 import json
 import re, string
 import ast, re
+import typer
 
 # ────────────────────────────────────────────────────────────
 # Helper functions for saving and exporting DataFrames to/from CSV
@@ -20,7 +21,7 @@ def load_df(path: str) -> pd.DataFrame:
 def run_vosk(audio_path: str, vosk_model: Model) -> list:
     # Load audio
     audio_data, sample_rate = sf.read(audio_path)
-    
+        
     # Prepare recognizer
     rec = KaldiRecognizer(vosk_model, sample_rate)
     rec.SetWords(True)
@@ -115,6 +116,18 @@ def is_end_tag(token):
 # Main Alignment Function
 # ────────────────────────────────────────────────────────────
 def align_transcript_with_vosk(vosk_words, transcript):
+    # Clean the transcript (Get rid of ```, 'plaintext', and 'markdown' markers)
+    try:
+        transcript = (
+            transcript
+            .replace('```', '')
+            .replace('plaintext', '')
+            .replace('markdown', '')
+            .strip()
+        )
+    except Exception as e:
+        transcript = ""
+    
     # Tokenize reference into tokens including tags
     ref_tokens = tokenize_reference(transcript)
 
@@ -240,10 +253,17 @@ def extract_pii_tuples(df,
             # ---------- closing tag ----------
             m_close = _END_RE.search(word)
             if m_close and open_tag == m_close.group(1):
-                # 1. previous token .end
+                # Initialize end_t to None so it always exists
+                end_t = None
+
+                # 1. own .end
+                end_t = tok.get("end", None)
+
+                # 2. previous token .end, if still None
                 if end_t is None and idx > 0:
-                    end_t = tokens[idx - 1]["end"]
-                # 2. next token .end
+                    end_t = tokens[idx - 1].get("end", None)
+
+                # 3. next token .end, if still None
                 if end_t is None:
                     end_t = _fwd_time(tokens, idx, "end")
 
@@ -255,3 +275,17 @@ def extract_pii_tuples(df,
 
     df[out_col] = out_rows
     return df
+
+# ────────────────────────────────────────────────────────────
+# Helper function to retrieve the id from the audio file name
+def retrieve_key(file: str) -> int:
+    try:
+        # 3 digit
+        key = int(file[2:5])
+    except ValueError:
+        # 1 digit
+        if file[3] == '.':
+            key = int(file[2])
+        else:
+            key = int(file[2:4])
+    return key

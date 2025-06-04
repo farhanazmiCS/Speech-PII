@@ -4,6 +4,7 @@ from pipeline import SpeechPIIPipeline
 from utils import save_df, load_df
 from vosk import Model
 import json, ast
+from typing import List
 
 app = typer.Typer()
 
@@ -73,6 +74,33 @@ def vosk(
 
 @app.command()
 def extract(
+    input_csv: str = typer.Argument(..., help="CSV with columns 'file' and 'tagged'"),
+    output_csv: str = typer.Argument(..., help="Where to write clean_text + pii_tuples"),
+    allowed_labels: List[str] = typer.Option(
+        None,
+        "--allowed_labels",
+        "-l",
+        help="One PII label per flag (e.g. --label EMAIL --label PHONE)."
+    )
+):
+    """
+    Strip out all [LABEL_START]…[LABEL_END] from each row of INPUT_CSV (which must
+    have columns 'file' and 'tagged').  Only labels listed via (--label) are retained.
+    Writes OUTPUT_CSV containing columns:
+        file, clean_text, pii_tuples  (where pii_tuples is a list of (start,end,label)).
+    """
+    pipe = SpeechPIIPipeline()
+    if not allowed_labels:
+        allowed_labels = [
+            "EMAIL", "NRIC", "CREDIT_CARD", "PHONE",
+            "PASSPORT_NUM", "BANK_ACCOUNT", "CAR_PLATE", "PERSON"
+        ]
+
+    df_out = pipe.extract(input_csv, output_csv, allowed_labels)
+    typer.echo(f"Done—wrote {len(df_out)} rows to {output_csv}")
+
+@app.command()
+def extract_using_timestamps(
     method: str = "",
     in_csv: str = "",
     out_csv: str = "",
@@ -96,9 +124,9 @@ def extract(
 
 @app.command()
 def evaluate(
-    gt_csv: str = "data/ground_truth.csv",
-    pred_csv: str = "data/triplets.csv",
-    tolerance: float = 0.5
+    gt_csv: str = "../../data/triplets/ref_triplets_500.csv",
+    pred_csv: str = "../../data/triplets/triplets_no_correct_zero_shot_icl.csv",
+    tolerance: float = 5
 ):
     """
     Step 5: Evaluation (precision, recall, F1, confusion matrix).
@@ -107,14 +135,51 @@ def evaluate(
     gt_df = load_df(gt_csv)
     pred_df = load_df(pred_csv)
     pipe.evaluate(
-        true_input=gt_df,
-        pred_input=pred_df,
+        true_df=gt_df,
+        pred_df=pred_df,
         classes=[
             'EMAIL','NRIC','CREDIT_CARD','PHONE',
-            'PASSPORT_NUM','BANK_ACCOUNT','CAR_PLATE'
+            'PASSPORT_NUM','BANK_ACCOUNT','CAR_PLATE',
+            'PERSON'
         ],
-        offset_tolerance=tolerance
+        offset_tolerance=tolerance,
     )
+
+@app.command()
+def evaluate_index(
+    true_csv: str = typer.Argument(..., help="Path to the CSV with ground‐truth pii_tuples"),
+    pred_csv: str = typer.Argument(..., help="Path to the CSV with predicted pii_tuples"),
+    allowed_labels: List[str] = typer.Option(
+        None,
+        "--allowed_labels",
+        "-l",
+        help="One PII label per flag (e.g. --label EMAIL --label PHONE)."
+    ),
+    tolerance: int = typer.Option(
+        5,
+        help="Character‐index tolerance for matching start/end (default = 5 → exact match)"
+    )
+):
+    """
+    Evaluate PII extraction by character‐index matching with optional tolerance.
+    Only the labels in --labels will be counted.
+    """
+    pipeline = SpeechPIIPipeline()
+    # Parse label list
+    try:
+        classes = [lab.strip() for lab in allowed_labels.split(",") if lab.strip()]
+    except Exception as e:
+        classes = [
+            'EMAIL', 'NRIC', 'CREDIT_CARD', 'PHONE',
+            'PASSPORT_NUM', 'BANK_ACCOUNT', 'CAR_PLATE'
+        ]
+
+    # Load both dataframes
+    true_df = pd.read_csv(true_csv)
+    pred_df = pd.read_csv(pred_csv)
+
+    # Call our index‐based evaluator with tolerance
+    pipeline.evaluate_by_index(true_df, pred_df, classes, tolerance)
 
 if __name__ == "__main__":
     app()

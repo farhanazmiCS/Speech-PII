@@ -13,7 +13,7 @@ from openai import OpenAI
 from utils import save_df, load_df
 from prompts import build_correction_prompt, build_tagging_prompt
 from utils import tokenize_reference, align_transcript_with_vosk
-from utils import extract_pii_tuples, retrieve_key
+from utils import extract_pii_tuples, retrieve_key, extract_entities, pad_entity_tags, unify_whitespace
 import typer
 
 from vosk import Model, KaldiRecognizer
@@ -152,7 +152,8 @@ class SpeechPIIPipeline:
                 response = self.llm.responses.create(
                     model="gpt-4o",
                     instructions=(
-                        "You are an expert in tagging PII."
+                        "You are an expert in tagging Personal Identifiable Information (PII) found in transcripts." \
+                        "Given the provided transcript, identify and tag all PII entities using the provided tags."
                     ),
                     input=prompt
                 )
@@ -257,80 +258,269 @@ class SpeechPIIPipeline:
         result = pd.DataFrame(df_out)
         result.to_csv(out_csv, index=False)
         return result
+    
+    def extract(
+            self, 
+            input_csv: str, 
+            output_csv: str, 
+            allowed_labels: list[str] = [
+                "EMAIL", "PHONE", "PERSON", 
+                "CREDIT_CARD", "BANK_ACCOUNT", 
+                "PASSPORT_NUM", "NRIC", "CAR_PLATE"
+            ]) -> pd.DataFrame:
+        """
+        1) Read input_csv (must have columns 'file' and 'tagged').
+        2) For each row: pad tags, collapse whitespace, then strip out tags
+        and collect (start,end,label) where label ∈ allowed_labels.
+        3) Write a new CSV with columns 'file', 'clean_text', 'pii_tuples'.
+        """
+        df_in = pd.read_csv(input_csv)
+        output_rows = []
+
+        for _, row in df_in.iterrows():
+            row_id = row.get("file", None)
+            raw_text = row.get("tagged", "")
+
+            try:
+                raw_text = (
+                    raw_text
+                    .replace('```', '')
+                    .replace('plaintext', '')
+                    .replace('markdown', '')
+                    .strip()
+                )
+            except Exception as e:
+                raw_text = ''
+
+            # 1) Pad entity tags → " … [LABEL_START] … [LABEL_END] … "
+            padded = pad_entity_tags(raw_text, allowed_labels)
+            # 2) Collapse any runs of whitespace/newlines into a single space
+            normalized = unify_whitespace(padded)
+
+            # 3) Now strip out all tags and record only (start,end,label) for allowed_labels
+            clean_text, entities = extract_entities(normalized, allowed_labels)
+
+            output_rows.append({
+                "file": row_id,
+                "clean_text": clean_text,
+                "pii_tuples": entities
+            })
+
+        df_out = pd.DataFrame(output_rows)
+        df_out.to_csv(output_csv, index=False)
+        return df_out
 
     def evaluate(self,
-             true_df: pd.DataFrame,
-             pred_df: pd.DataFrame,
-             classes: list[str],
-             offset_tolerance: float = 0.5) -> None:
+                true_df: pd.DataFrame,
+                pred_df: pd.DataFrame,
+                classes: list[str],
+                offset_tolerance: float = 0.5) -> None:
         """
         Compute entity‐level precision, recall, F1 and confusion matrix based on
         time‐boundary matching within a tolerance, then matching labels.
 
+        Only entities whose label is in `classes` are counted. Any tuple with a label
+        not in `classes` is ignored (neither TP/FP/FN nor confusion‐matrix entry).
+
         Args:
-            true_df: DataFrame with column 'pii_tuples' containing lists of
-                    (start, end, label) ground-truth spans.
+            true_df: DataFrame with column 'pii_tuples' as a JSON/pickle string or list of
+                    (start, end, label) ground‐truth spans.
             pred_df: DataFrame with same structure for predictions.
-            classes: List of allowed PII labels.
+            classes: List of allowed PII labels to evaluate.
             offset_tolerance: Max seconds difference allowed on start/end to count as a boundary match.
         """
         # Initialize counters
-        metrics = {lab: {'tp':0, 'fp':0, 'fn':0} for lab in classes}
-        idx_map = {lab:i for i, lab in enumerate(classes)}
+        metrics = {lab: {'tp': 0, 'fp': 0, 'fn': 0} for lab in classes}
+        idx_map = {lab: i for i, lab in enumerate(classes)}
         cm = np.zeros((len(classes), len(classes)), dtype=int)
 
-        # Iterate rows
+        # Iterate row‐by‐row
         for gt_row, pred_row in zip(true_df.itertuples(), pred_df.itertuples()):
-            gt_entities   = gt_row.pii_tuples or []
-            pred_entities = pred_row.pii_tuples or []
-            gt_left       = gt_entities.copy()
+            # Parse literal if stored as string, or else assume it's already a list
+            raw_gt = gt_row.pii_tuples
+            raw_pred = pred_row.pii_tuples
 
-            # Match each predicted span to a ground-truth span
+            if isinstance(raw_gt, str):
+                gt_entities = ast.literal_eval(raw_gt)
+            else:
+                gt_entities = raw_gt or []
+            if isinstance(raw_pred, str):
+                pred_entities = ast.literal_eval(raw_pred)
+            else:
+                pred_entities = raw_pred or []
+
+            # Keep only those tuples whose label is in `classes`
+            gt_entities = [(s, e, lab) for (s, e, lab) in gt_entities if lab in classes]
+            pred_entities = [(s, e, lab) for (s, e, lab) in pred_entities if lab in classes]
+
+            # Make a mutable copy of ground‐truth list for matching
+            gt_left = gt_entities.copy()
+
+            # 1) For each predicted span, try to match a GT span
             for p_start, p_end, p_lab in pred_entities:
                 matched = False
                 for i, (g_start, g_end, g_lab) in enumerate(gt_left):
-                    if (abs(p_start - g_start) <= offset_tolerance and
-                        abs(p_end   - g_end)   <= offset_tolerance):
-                        matched = True
-                        # update confusion matrix
-                        gi, pi = idx_map[g_lab], idx_map[p_lab]
-                        cm[gi, pi] += 1
-                        # true positive or label-swap
-                        if p_lab == g_lab:
-                            metrics[p_lab]['tp'] += 1
-                        else:
-                            metrics[p_lab]['fp'] += 1
-                            metrics[g_lab]['fn'] += 1
-                        gt_left.pop(i)
-                        break
-                if not matched:
-                    # false positive for unmatched prediction
-                    if p_lab in metrics:
-                        metrics[p_lab]['fp'] += 1
+                    try:
+                        # If any boundary is None, these arithmetic ops will raise TypeError
+                        if (abs(p_start - g_start) <= offset_tolerance and
+                            abs(p_end   - g_end)   <= offset_tolerance):
+                            matched = True
+                            # update confusion matrix
+                            gi, pi = idx_map[g_lab], idx_map[p_lab]
+                            cm[gi, pi] += 1
+                            # true positive or label‐swap
+                            if p_lab == g_lab:
+                                metrics[p_lab]['tp'] += 1
+                            else:
+                                metrics[p_lab]['fp'] += 1
+                                metrics[g_lab]['fn'] += 1
+                            # remove matched GT so it can't match again
+                            gt_left.pop(i)
+                            break
+                    except TypeError:
+                        # One of p_start, p_end, g_start, g_end was None → cannot match
+                        continue
 
-            # any gt left are false negatives
+                if not matched:
+                    # No boundary match found ⇒ false positive for this predicted label
+                    metrics[p_lab]['fp'] += 1
+
+            # 2) Any GT spans left unmatched are false negatives
             for _, _, g_lab in gt_left:
                 metrics[g_lab]['fn'] += 1
 
-        # Compute precision, recall, F1
+        # Compute precision, recall, F1 for each class
         p_list, r_list, f_list = [], [], []
         for lab in classes:
             tp = metrics[lab]['tp']
             fp = metrics[lab]['fp']
             fn = metrics[lab]['fn']
-            prec = tp / (tp + fp) if tp + fp > 0 else 0.0
-            rec  = tp / (tp + fn) if tp + fn > 0 else 0.0
-            f1   = 2 * prec * rec / (prec + rec) if prec + rec > 0 else 0.0
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1   = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
             p_list.append(prec)
             r_list.append(rec)
             f_list.append(f1)
 
-        overall_f1 = np.mean(f_list)
+        overall_f1 = np.mean(f_list) if f_list else 0.0
 
         # Print results
-        print("Per-class F1:")
-        for lab, f1 in zip(classes, f_list):
-            print(f"  {lab}: {f1:.3f}")
+        print("Per‐class F1:")
+        for lab, score in zip(classes, f_list):
+            print(f"  {lab}: {score:.3f}")
+        print(f"\nOverall (macro) F1: {overall_f1:.3f}\n")
+
+        print("Confusion Matrix:")
+        df_cm = pd.DataFrame(cm, index=classes, columns=classes)
+        print(df_cm)
+    
+    def evaluate_by_index(
+        self,
+        true_df: pd.DataFrame,
+        pred_df: pd.DataFrame,
+        classes: list[str] = [
+            'EMAIL', 'NRIC', 'CREDIT_CARD', 'PHONE',
+            'PASSPORT_NUM', 'BANK_ACCOUNT', 'CAR_PLATE', 'PERSON'],
+        tolerance: int = 5
+    ) -> None:
+        """
+        Compute entity‐level precision, recall, F1 and confusion matrix based on
+        character‐index matching within a tolerance, then matching labels.
+
+        Only entities whose label is in `classes` are counted. Any tuple with a label
+        not in `classes` is ignored (neither TP/FP/FN nor confusion‐matrix entry).
+
+        Args:
+            true_df: DataFrame with column 'pii_tuples' as a JSON or Python‐literal string,
+                     or list of (start_idx, end_idx, label) ground‐truth spans.
+            pred_df: DataFrame with same structure for predictions.
+            classes: List of allowed PII labels to evaluate.
+            offset:  Max character‐index difference permitted on start/end to count as a match.
+                     (If offset = 0 → exact match required.)
+        """
+        # Initialize counters
+        metrics = {lab: {'tp': 0, 'fp': 0, 'fn': 0} for lab in classes}
+        idx_map = {lab: i for i, lab in enumerate(classes)}
+        cm = np.zeros((len(classes), len(classes)), dtype=int)
+
+        # Iterate row‐by‐row
+        for gt_row, pred_row in zip(true_df.itertuples(), pred_df.itertuples()):
+            raw_gt = gt_row.pii_tuples
+            raw_pred = pred_row.pii_tuples
+
+            # If stored as string, parse; else assume it’s already a list
+            if isinstance(raw_gt, str):
+                gt_entities = ast.literal_eval(raw_gt) or []
+            else:
+                gt_entities = raw_gt or []
+
+            if isinstance(raw_pred, str):
+                pred_entities = ast.literal_eval(raw_pred) or []
+            else:
+                pred_entities = raw_pred or []
+
+            # Keep only tuples whose label is in `classes`
+            gt_entities = [(s, e, lab) for (s, e, lab) in gt_entities if lab in classes]
+            pred_entities = [(s, e, lab) for (s, e, lab) in pred_entities if lab in classes]
+
+            # Make a mutable copy of GT for matching
+            gt_left = gt_entities.copy()
+
+            # 1) For each predicted span, try to match a GT span within `offset`
+            for p_start, p_end, p_lab in pred_entities:
+                matched = False
+                for i, (g_start, g_end, g_lab) in enumerate(gt_left):
+                    try:
+                        # If any boundary is None, these arithmetic ops will TypeError → skip
+                        if (
+                            abs(p_start - g_start) <= tolerance
+                            and abs(p_end - g_end) <= tolerance
+                        ):
+                            matched = True
+                            # Update confusion matrix
+                            gi, pi = idx_map[g_lab], idx_map[p_lab]
+                            cm[gi, pi] += 1
+                            # True positive or label‐swap
+                            if p_lab == g_lab:
+                                metrics[p_lab]['tp'] += 1
+                            else:
+                                metrics[p_lab]['fp'] += 1
+                                metrics[g_lab]['fn'] += 1
+                            # Remove matched GT so it can’t match again
+                            gt_left.pop(i)
+                            break
+
+                    except TypeError:
+                        # One of p_start, p_end, g_start, g_end was None → cannot match
+                        continue
+
+                if not matched:
+                    # No boundary‐within‐tolerance match found ⇒ false positive
+                    metrics[p_lab]['fp'] += 1
+
+            # 2) Any GT spans still left unmatched are false negatives
+            for _, _, g_lab in gt_left:
+                metrics[g_lab]['fn'] += 1
+
+        # Compute precision, recall, F1 for each class
+        p_list, r_list, f_list = [], [], []
+        for lab in classes:
+            tp = metrics[lab]['tp']
+            fp = metrics[lab]['fp']
+            fn = metrics[lab]['fn']
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+            p_list.append(prec)
+            r_list.append(rec)
+            f_list.append(f1)
+
+        overall_f1 = np.mean(f_list) if f_list else 0.0
+
+        # Print results
+        print("Per‐class F1:")
+        for lab, score in zip(classes, f_list):
+            print(f"  {lab}: {score:.3f}")
         print(f"\nOverall (macro) F1: {overall_f1:.3f}\n")
 
         print("Confusion Matrix:")

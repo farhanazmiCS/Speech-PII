@@ -54,49 +54,44 @@ def build_tagging_prompt(transcript: str, method: str) -> str:
     # all nine examples packed into one list
     examples = [
         {
-            "in":  "okay uh my full name is janice Teh uh Wei Ling and I C number is G 0881816 P.",
+            "in": "okay uh my full name is janice Teh uh Wei Ling and I C number is G 0881816 P.",
             "out": "okay uh my full name is [PERSON_START] janice Teh uh Wei Ling [PERSON_END] and I C number is [NRIC_START] G 0881816 P [NRIC_END].",
-            "reason": "“janice Teh uh Wei Ling” is a full name → PERSON; “G 0881816 P” matches NRIC format → NRIC."
+            "reason": "“janice Teh uh Wei Ling” is a full name, which is a PERSON entity. “G 0881816 P” is a valid NRIC format in Singapore."
         },
         {
-            "in":  "d a n n y dot tan at protonmail dot com is my secure email.",
+            "in": "d a n n y dot tan at protonmail dot com is my secure email.",
             "out": "[EMAIL_START] d a n n y dot tan at protonmail dot com [EMAIL_END] is my secure email.",
-            "reason": "Obfuscated email format → EMAIL."
+            "reason": "The email starts at the first token and follows a valid obfuscated format, so it must be fully enclosed within the boundary tags."
         },
         {
-            "in":  "So her bank account number is 173-2845-10 and she banks with POSB.",
+            "in": "So her bank account number is 173-2845-10 and she banks with POSB.",
             "out": "So her bank account number is [BANK_ACCOUNT_START] 173-2845-10 [BANK_ACCOUNT_END] and she banks with POSB.",
-            "reason": "Explicitly referred bank account number → BANK_ACCOUNT."
+            "reason": "“173-2845-10” is explicitly referred to as a bank account number."
         },
         {
-            "in":  "Can I make the payment using my credit card? It’s 5243 8821 9912 3109 and expires next year.",
+            "in": "Can I make the payment using my credit card? It’s 5243 8821 9912 3109 and expires next year.",
             "out": "Can I make the payment using my credit card? It’s [CREDIT_CARD_START] 5243 8821 9912 3109 [CREDIT_CARD_END] and expires next year.",
-            "reason": "16-digit sequence → CREDIT_CARD."
+            "reason": "“5243 8821 9912 3109” is a 16-digit sequence matching credit card format."
         },
         {
-            "in":  "The license plate of the car parked outside is SKB 9012 C.",
+            "in": "The license plate of the car parked outside is SKB 9012 C.",
             "out": "The license plate of the car parked outside is [CAR_PLATE_START] SKB 9012 C [CAR_PLATE_END].",
-            "reason": "Valid Singapore car plate → CAR_PLATE."
+            "reason": "“SKB 9012 C” is a valid car plate format in Singapore and is contextually referenced."
         },
         {
-            "in":  "You can verify my identity using passport number K 1065125 K.",
+            "in": "You can verify my identity using passport number K 1065125 K.",
             "out": "You can verify my identity using passport number [PASSPORT_NUM_START] K 1065125 K [PASSPORT_NUM_END].",
-            "reason": "Valid passport format → PASSPORT_NUM."
+            "reason": "“K 1065125 K” is a valid passport format and is labeled as such."
         },
         {
-            "in":  "She was born on two september 1995.",
-            "out": "She was born on [DATE_START] two september 1995 [DATE_END].",
-            "reason": "Full date → DATE."
-        },
-        {
-            "in":  "I spoke to jon this morning about the refund request.",
+            "in": "I spoke to jon this morning about the refund request.",
             "out": "I spoke to [PERSON_START] jon [PERSON_END] this morning about the refund request.",
-            "reason": "Name mention → PERSON."
+            "reason": "“jon” is a name of a person mentioned in the conversation and should be tagged as a PERSON."
         },
         {
-            "in":  "My NRIC is S1234567D and my email is felicia123 at gmail dot com.",
+            "in": "My NRIC is S1234567D and my email is felicia123 at gmail dot com.",
             "out": "My NRIC is [NRIC_START] S1234567D [NRIC_END] and my email is [EMAIL_START] felicia123 at gmail dot com [EMAIL_END].",
-            "reason": "NRIC pattern → NRIC; obfuscated email → EMAIL."
+            "reason": "“S1234567D” is a valid NRIC, and “felicia123 at gmail dot com” is an obfuscated email address."
         }
     ]
 

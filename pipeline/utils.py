@@ -113,6 +113,99 @@ def is_end_tag(token):
     return token.endswith("_END]")
 
 # ────────────────────────────────────────────────────────────
+# Helper functions to clean and extract entity triplets from a raw transcript string
+# ────────────────────────────────────────────────────────────
+
+def pad_entity_tags(text: str, allowed_labels: list[str]) -> str:
+    """
+    Ensures there is exactly one space before and after each entity tag
+    (if it's not already whitespace/punctuation).  We only look for labels
+    in `allowed_labels`, e.g. ["EMAIL","PHONE",...].
+    """
+    if not isinstance(text, str):
+        return text
+
+    for label in allowed_labels:
+        # Make sure “[LABEL_START]” always has spaces around it
+        text = re.sub(
+            rf'(?<!\s)\[({label})_START\]',
+            r' [\1_START] ',
+            text
+        )
+        text = re.sub(
+            rf'\[({label})_START\](?!\s)',
+            r' [\1_START] ',
+            text
+        )
+        # Likewise for “[LABEL_END]”
+        text = re.sub(
+            rf'(?<!\s)\[({label})_END\]',
+            r' [\1_END] ',
+            text
+        )
+        text = re.sub(
+            rf'\[({label})_END\](?!\s)',
+            r' [\1_END] ',
+            text
+        )
+    return text
+
+def unify_whitespace(s: str) -> str:
+    """
+    Replace any sequence of whitespace (spaces, tabs, newlines) with a single space,
+    and strip leading/trailing spaces.
+    """
+    if not isinstance(s, str):
+        return s
+    return re.sub(r'\s+', ' ', s).strip()
+
+def extract_entities(text: str, allowed_labels: list[str]) -> tuple[str, list[tuple[int,int,str]]]:
+    """
+    Given a (pre‐processed) transcript string containing tags like [LABEL_START]…[LABEL_END],
+    return (clean_text, entities), where:
+      - clean_text has all “[LABEL_START]” / “[LABEL_END]” markers stripped out,
+      - entities is a list of (start_char_idx, end_char_idx, LABEL) tuples, 
+        but only if LABEL ∈ allowed_labels.
+    """
+    ENTITY_PATTERN = re.compile(r'\[([A-Z_]+)_START\](.*?)\[(?:[A-Z_]+)_END\]', re.DOTALL)
+    if not isinstance(text, str):
+        return ("", [])
+
+    clean_parts = []
+    entities = []
+    last_index = 0
+    current_length = 0
+
+    for match in ENTITY_PATTERN.finditer(text):
+        span_start, span_end = match.span()
+        # 1) copy everything before this tag into clean_parts
+        pre_text = text[last_index:span_start]
+        clean_parts.append(pre_text)
+        current_length += len(pre_text)
+
+        # 2) extract label and inner content (trim whitespace inside the entity)
+        label = match.group(1)
+        entity_text = match.group(2).strip()
+
+        entity_start = current_length
+        clean_parts.append(entity_text)
+        current_length += len(entity_text)
+        entity_end = current_length
+
+        # 3) only record if label is in allowed_labels
+        if label in allowed_labels:
+            entities.append((entity_start, entity_end, label))
+
+        last_index = span_end
+
+    # 4) append any text after the last tag
+    remainder = text[last_index:]
+    clean_parts.append(remainder)
+    clean_text = "".join(clean_parts)
+
+    return clean_text, entities
+
+# ────────────────────────────────────────────────────────────
 # Main Alignment Function
 # ────────────────────────────────────────────────────────────
 def align_transcript_with_vosk(vosk_words, transcript):
